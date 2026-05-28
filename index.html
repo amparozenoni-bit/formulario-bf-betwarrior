@@ -1343,20 +1343,23 @@ async function parseDetalle(input) {
 
 // ── Build month table from parsed data ──
 function buildMonthTableFromData(monthly) {
-  // Filter out invalid keys (NaN, out-of-range years) before building table
+  // Filter out invalid keys (NaN, out-of-range years)
   const validKeys = Object.keys(monthly).filter(k => {
     const yr = parseInt(k.split('-')[0]);
     return !isNaN(yr) && yr >= 2020 && yr <= 2035;
   });
-  const allYears = [...new Set(validKeys.map(k=>parseInt(k.split('-')[0])))].sort();
-  const years = allYears.length ? allYears : [2025, 2026];
-  if (!years.includes(2025) && years[0] > 2025) years.unshift(2025);
-  if (!years.includes(2026)) years.push(2026);
+
+  // Always show current year and previous year at minimum
+  const currentYear = new Date().getFullYear();
+  const dataYears = [...new Set(validKeys.map(k => parseInt(k.split('-')[0])))].sort();
+  const years = new Set([currentYear - 1, currentYear]);
+  dataYears.forEach(y => years.add(y));
+  const sortedYears = [...years].filter(y => !isNaN(y) && y >= 2020 && y <= 2035).sort();
 
   let html = `<thead><tr><th style="text-align:left;min-width:80px;padding:6px 8px">Tipo</th>`;
   MONTHS.forEach(m => html += `<th>${m}</th>`);
   html += '</tr></thead><tbody>';
-  years.forEach(yr => {
+  sortedYears.forEach(yr => {
     html += `<tr><td colspan="13" class="yr-header">${yr}</td></tr>`;
     ['dep','ret'].forEach(type => {
       html += `<tr><td style="font-weight:700;font-size:11px;color:var(--gray);padding:5px 8px;background:#FAFAFA;white-space:nowrap">${type==='dep'?'Depósitos':'Retiradas'}</td>`;
@@ -1970,20 +1973,43 @@ async function generatePDF() {
   opsRow('Retiradas','BRL',fmtInt(v('qtd_ret')),fmtNum('val_ret'),true);
   y+=2;
   orangeSubBar('Avaliação de Risco / Resumo do Jogador');
-  y+=2;
+  y+=4;
 
-  // Narrative
+  // Narrative — render each paragraph with indent, spacing and alternating subtle bg
   const texto=v('texto_narrativo');
   if(texto){
     const paras=texto.split('\n\n').filter(p=>p.trim());
-    paras.forEach(para=>{
-      const lines=doc.splitTextToSize(para.trim(),cw);
-      const h=lines.length*4.5+4;
+    paras.forEach((para, idx)=>{
+      const trimmed = para.trim();
+      const lines=doc.splitTextToSize(trimmed, cw - 6);
+      const h = lines.length * 4.6 + 7;
       check(h);
-      sf(7.5,false,30,30,30); doc.text(lines,ML,y); y+=h;
+
+      // Alternating light background per paragraph
+      if(idx % 2 === 0){
+        doc.setFillColor(252,252,252);
+      } else {
+        doc.setFillColor(248,248,255);
+      }
+      doc.roundedRect(ML, y, cw, h - 2, 1, 1, 'F');
+
+      // Left accent bar
+      doc.setFillColor(255,69,0);
+      doc.rect(ML, y, 2, h - 2, 'F');
+
+      // Paragraph number badge
+      doc.setFillColor(240,240,240);
+      doc.roundedRect(ML + 4, y + 2, 5, 4, 0.5, 0.5, 'F');
+      sf(5.5, true, 120,120,120);
+      doc.text(String(idx + 1), ML + 6.5, y + 5.2, {align:'center'});
+
+      // Paragraph text with indent
+      sf(7.5, false, 30,30,30);
+      doc.text(lines, ML + 11, y + 5);
+      y += h;
     });
   }
-  y+=4;
+  y+=6;
 
   // — Visão Geral —
   newPage();
@@ -2626,12 +2652,12 @@ async function parseTransacoes(input) {
       const mo = MM[p[0]]; const yr = parseInt(p[1]);
       if (!mo || !yr || isNaN(yr) || yr < 2020 || yr > 2035) return;
 
-      const dep  = typeof r['Depositos'] === 'number' ? r['Depositos'] : 0;
-      const ret  = typeof r['Retiros'] === 'number' ? r['Retiros'] : 0;
-      const ap   = typeof r['Apuestas'] === 'number' ? r['Apuestas'] : 0;
-      const prem = typeof r['Premios'] === 'number' ? r['Premios'] : 0;
-      const qd   = typeof r['Cantidad Depositos'] === 'number' ? r['Cantidad Depositos'] : 0;
-      const qr   = typeof r['Cantidad Retiros'] === 'number' ? r['Cantidad Retiros'] : 0;
+      const dep  = (typeof r['Depositos'] === 'number' && isFinite(r['Depositos'])) ? r['Depositos'] : 0;
+      const ret  = (typeof r['Retiros'] === 'number' && isFinite(r['Retiros'])) ? r['Retiros'] : 0;
+      const ap   = (typeof r['Apuestas'] === 'number' && isFinite(r['Apuestas'])) ? r['Apuestas'] : 0;
+      const prem = (typeof r['Premios'] === 'number' && isFinite(r['Premios'])) ? r['Premios'] : 0;
+      const qd   = (typeof r['Cantidad Depositos'] === 'number' && isFinite(r['Cantidad Depositos'])) ? r['Cantidad Depositos'] : 0;
+      const qr   = (typeof r['Cantidad Retiros'] === 'number' && isFinite(r['Cantidad Retiros'])) ? r['Cantidad Retiros'] : 0;
 
       totalDep += dep; totalRet += ret; totalAp += ap; totalPrem += prem;
 
