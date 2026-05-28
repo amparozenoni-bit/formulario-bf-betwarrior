@@ -1510,18 +1510,42 @@ function substituteFields(texto) {
     .replace(/\[DATA_ALERTA_INTERNO\]/g, fmt('data_inicio') || '[DATA_ALERTA]');
 }
 
-// Enrich narrative with PDF busca data (called after substituteFields)
+// Enrich narrative with PDF busca data
 function enrichNarrativeWithPdf(texto) {
   const d = window.pdfBuscaData || {};
-  if (!d.incomeRange && !d.employed && !d.familyIncome) return texto;
+  if (!d.incomeRange && !d.employed && !d.financialRiskLevel) return texto;
 
-  // Replace generic "atividade" references with PDF-enriched context
-  if (d.employed === 'No' && d.incomeRange) {
+  // Build the BigData enrichment sentence
+  const parts = [];
+  if (d.employed === 'No') {
+    parts.push('o cliente não possui vínculo empregatício ativo');
+  } else if (d.employed === 'Yes' && d.currentEmployer) {
+    parts.push(`o cliente possui vínculo empregatício ativo em ${d.currentEmployer}`);
+  }
+  if (d.incomeRange) parts.push(`renda individual estimada na faixa de ${d.incomeRange}`);
+  if (d.familyIncome) parts.push(`renda familiar total de ${d.familyIncome}`);
+  if (d.totalAssets) parts.push(`patrimônio total estimado ${d.totalAssets.toLowerCase()}`);
+  if (d.financialRiskLevel) parts.push(`score de risco financeiro nível ${d.financialRiskLevel}${d.financialRiskScore ? ' (' + d.financialRiskScore + ' pontos)' : ''}`);
+
+  if (!parts.length) return texto;
+
+  const enrichSentence = `De acordo com consulta realizada ao BigData Corp, ${parts.join(', ')}. Referido perfil econômico é incompatível com o volume de movimentações registrado na plataforma.`;
+
+  // Replace the target paragraph — inject after the occupation/source sentence
+  // Pattern covers both "não respondeu" and "corroborar" variants
+  texto = texto.replace(
+    /(declarando que os recursos utilizados na plataforma seriam provenientes de [^.]+\.[^]*?)(Não obstante[^.]+\.|não foi possível corroborar[^.]+\.|Contudo[^.]+\.)/,
+    (match, before, notObstante) => `${before}${notObstante}\n\n${enrichSentence}`
+  );
+
+  // Fallback: if pattern didn't match, append after the first mention of FONTE_FUNDOS sentence
+  if (!texto.includes('BigData Corp')) {
     texto = texto.replace(
-      /não foi possível corroborar de maneira independente que a atividade declarada corresponda efetivamente à sua atividade econômica real/,
-      `constatou-se, por meio de consulta ao BigData Corp, que o cliente não possui vínculo empregatício ativo, com renda estimada na faixa de ${d.incomeRange}${d.familyIncome ? ', e renda familiar total estimada em ' + d.familyIncome : ''}`
+      /(declarando que os recursos utilizados na plataforma seriam provenientes de [^\n]+\.)/,
+      `$1\n\n${enrichSentence}`
     );
   }
+
   return texto;
 }
 
@@ -2000,6 +2024,42 @@ async function generatePDF() {
     sf(7,true,80,80,80); doc.text('Observações:',ML+2,y); y+=5;
     const oL=doc.splitTextToSize(v('obs_buscas'),cw);
     check(oL.length*4+3); sf(7.5,false,30,30,30); doc.text(oL,ML+2,y); y+=oL.length*4+4;
+  }
+
+  // BigData Corp extracted data box
+  const bd = window.pdfBuscaData || {};
+  if (bd.employed || bd.incomeRange || bd.financialRiskLevel) {
+    y+=3; check(8);
+    // Purple header bar
+    doc.setFillColor(124,58,237);
+    doc.roundedRect(ML,y,cw,6.5,1,1,'F');
+    sf(7,true,255,255,255);
+    doc.text('Dados Extraídos — BigData Corp',ML+3,y+4.5);
+    y+=8;
+    const bdRows=[
+      ['Situação Empregatícia', bd.employed==='Yes'?'Empregado':bd.employed==='No'?'Não empregado':'—'],
+      bd.currentEmployer ? ['Empregador Atual', bd.currentEmployer] : null,
+      ['Renda Individual Estimada', bd.incomeRange||'—'],
+      ['Renda Familiar Total', bd.familyIncome||'—'],
+      ['Patrimônio Total Estimado', bd.totalAssets||'—'],
+      ['Fonte Principal de Renda', bd.mainIncomeSource||'—'],
+      ['Score de Risco Financeiro', bd.financialRiskLevel ? `Nível ${bd.financialRiskLevel}${bd.financialRiskScore?' ('+bd.financialRiskScore+' pts)':''}` : '—'],
+      ['Ocorrências em Cobranças', bd.collections||'0'],
+      ['PEP', bd.isPep==='Yes'?'POSITIVO':bd.isPep==='No'?'Negativo':'—'],
+      ['Sancionado', bd.currentlySanctioned==='Yes'?'SIM':bd.currentlySanctioned==='No'?'Não':'—'],
+    ].filter(Boolean);
+    bdRows.forEach((r,i)=>{
+      check(6);
+      const bg = i%2===0?[250,247,255]:[255,255,255];
+      doc.setFillColor(...bg);
+      doc.rect(ML,y,cw,6,'F');
+      doc.setDrawColor(220,210,250);
+      doc.rect(ML,y,cw,6,'S');
+      sf(6.5,true,100,80,140); doc.text(r[0],ML+2,y+4);
+      sf(6.5,false,30,20,60); doc.text(String(r[1]),ML+cw-2,y+4,{align:'right'});
+      y+=6;
+    });
+    y+=4;
   }
 
   const repPrevEl=document.querySelector('input[name="rep_previo"]:checked');
@@ -2843,26 +2903,49 @@ function applyBuscaToForm(data) {
     // Try to set to Autônomo or leave for manual
   }
 
-  // Add observations about financial profile
+  // Fill observations with structured BigData Corp summary
   const obsEl = document.getElementById('obs_buscas');
-  if (obsEl && !obsEl.value) {
+  if (obsEl) {
     const lines = [];
-    if (data.employed === 'Yes' && data.currentEmployer) {
-      lines.push(`BigData Corp: cliente com vínculo empregatício ativo em ${data.currentEmployer}${data.currentSector ? ' (setor: ' + data.currentSector + ')' : ''}.`);
-    } else if (data.employed === 'No') {
-      lines.push('BigData Corp: cliente sem vínculo empregatício ativo.');
+
+    // Employment
+    if (d.employed === 'Yes' && d.currentEmployer) {
+      lines.push(`Vínculo empregatício: ativo em ${d.currentEmployer}${d.currentSector ? ' — ' + d.currentSector : ''}.`);
+    } else if (d.employed === 'No') {
+      lines.push('Vínculo empregatício: sem vínculo ativo (fonte: BigData Corp / RAIS).');
     }
-    if (data.incomeRange) lines.push(`Renda estimada: ${data.incomeRange}.`);
-    if (data.familyIncome) lines.push(`Renda familiar total estimada: ${data.familyIncome}.`);
-    if (data.totalAssets) lines.push(`Patrimônio total estimado: ${data.totalAssets}.`);
-    const sanctions = data.sanctions || {};
+
+    // Income
+    if (d.incomeRange) lines.push(`Renda individual estimada: ${d.incomeRange}.`);
+    if (d.familyIncome) lines.push(`Renda familiar total: ${d.familyIncome}.`);
+    if (d.totalAssets) lines.push(`Patrimônio total estimado: ${d.totalAssets}.`);
+    if (d.mainIncomeSource) lines.push(`Fonte principal de renda: ${d.mainIncomeSource}.`);
+
+    // Risk score
+    if (d.financialRiskLevel) {
+      lines.push(`Score de risco financeiro: nível ${d.financialRiskLevel}${d.financialRiskScore ? ' (' + d.financialRiskScore + ' pontos)' : ''}.`);
+    }
+
+    // Collections
+    if (d.collections && d.collections !== '0') {
+      lines.push(`Ocorrências em cobranças: ${d.collections}.`);
+    }
+
+    // Sanctions
+    const sanctions = d.sanctions || {};
     const sanctEntries = Object.entries(sanctions).filter(([,v]) => v !== null);
     if (sanctEntries.length > 0) {
       const s = sanctEntries.map(([src,r]) => `${src} (match rate ${r}%)`).join('; ');
-      lines.push(`Coincidências em listas internacionais: ${s}. Verificar se correspondem ao titular.`);
+      lines.push(`Coincidências em listas internacionais: ${s}. Verificar se correspondem ao titular da conta — nomes distintos e datas de nascimento divergentes.`);
+    } else {
+      lines.push('Listas internacionais (OFAC, INTERPOL, FBI): sem coincidências relevantes.');
     }
-    if (data.financialRiskLevel) lines.push(`Score de risco financeiro: nível ${data.financialRiskLevel} (${data.financialRiskScore || '—'} pontos).`);
-    if (lines.length) obsEl.value = lines.join(' ');
+
+    // PEP
+    if (d.isPep === 'No') lines.push('PEP: negativo.');
+    else if (d.isPep === 'Yes') lines.push('PEP: POSITIVO — cliente identificado como Pessoa Politicamente Exposta.');
+
+    obsEl.value = lines.join('\n');
   }
 
   // Enrich narrative with occupation/income data
