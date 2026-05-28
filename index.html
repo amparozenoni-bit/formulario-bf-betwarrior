@@ -2639,83 +2639,150 @@ window.pdfBuscaData = {};
 
 async function parsePdfBusca(input) {
   const file = input.files[0]; if (!file) return;
-  // Store for PDF attachment
   const fakeInput = {files: [file]};
   addFiles(fakeInput, 'list-buscas');
   input.value = '';
 
-  // Show loading state
   const box = document.getElementById('pdf-extract-box');
   const rows = document.getElementById('pdf-extract-rows');
   box.style.display = 'block';
-  rows.innerHTML = '<div style="color:#7C3AED;font-size:12px;padding:8px 0">⏳ Analisando PDF com IA...</div>';
+  rows.innerHTML = '<div style="color:#7C3AED;font-size:12px;padding:8px 0">⏳ Lendo PDF...</div>';
 
   try {
-    // Read file as base64
-    const base64 = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result.split(',')[1]);
-      r.onerror = rej;
-      r.readAsDataURL(file);
-    });
-
-    // Call Claude API to extract structured data from the PDF
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: base64 }
-            },
-            {
-              type: 'text',
-              text: `Extract the following fields from this risk search report and return ONLY a JSON object with no other text:
-{
-  "employed": "Yes" or "No" (from "Is Currently Employed" or "Employed"),
-  "incomeRange": string or null (from "Estimated Income Range" or "BIGDATA_V2"),
-  "familyIncome": string or null (from "Total Family Income"),
-  "totalAssets": string or null (from "Total Assets" or "Total assets"),
-  "mainIncomeSource": string or null (from "Main Income Source"),
-  "companyOwner": "Yes" or "No" or null (from "Is Currently Company Owner"),
-  "isPep": "Yes" or "No" (from "Is Currently PEP"),
-  "financialRiskLevel": string or null (from "Financial Risk Level"),
-  "financialRiskScore": string or null (from "Financial Risk Score"),
-  "collections": string or null (from "Collections Occurrences"),
-  "currentEmployer": string or null (most recent active employer name from Business Relationships or Professions),
-  "currentSector": string or null (sector/activity of current employment),
-  "sanctions": {
-    "INTERPOL": highest match rate number if any interpol entry has match rate >= 50, else null,
-    "OFAC": highest match rate number if any ofac entry has match rate >= 50, else null,
-    "FBI": highest match rate number if any fbi entry has match rate >= 25, else null
-  },
-  "currentlySanctioned": "Yes" or "No" (from "Is Currently Sanctioned")
-}`
-            }
-          ]
-        }]
-      })
-    });
-
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
-    // Strip markdown fences if present
-    const clean = text.replace(/```json|```/g, '').trim();
-    const extracted = JSON.parse(clean);
-
-    window.pdfBuscaData = extracted;
-    renderPdfExtract(extracted);
-    applyBuscaToForm(extracted);
-
+    const text = await extractPdfTextPdfJs(file);
+    const data = parseBuscaText(text);
+    window.pdfBuscaData = data;
+    renderPdfExtract(data);
+    applyBuscaToForm(data);
   } catch(err) {
-    rows.innerHTML = `<div style="color:#E53935;font-size:12px;padding:8px 0">Erro ao processar PDF: ${err.message}</div>`;
+    rows.innerHTML = `<div style="color:#E53935;font-size:12px;padding:8px 0">Erro: ${err.message}</div>`;
     console.error(err);
   }
+}
+
+// Extract text using PDF.js (loaded from CDN)
+async function extractPdfTextPdfJs(file) {
+  // Dynamically load PDF.js if not already loaded
+  if (!window.pdfjsLib) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(item => item.str).join(' ');
+    fullText += pageText + '\n';
+  }
+  return fullText;
+}
+
+// Parse the extracted text — structured for BigData Corp report format
+function parseBuscaText(text) {
+  const data = {};
+
+  // Helper: find value after a label, on same or next line
+  const find = (patterns) => {
+    for (const pat of patterns) {
+      const m = text.match(pat);
+      if (m && m[1] && m[1].trim()) return m[1].trim();
+    }
+    return null;
+  };
+
+  // Employment — "Is Currently Employed Yes/No" or "Employed Yes/No"
+  data.employed = find([
+    /Is Currently Employed\s+(Yes|No)/i,
+    /(?<!\w)Employed\s+(Yes|No)/i
+  ]);
+  // If multiple "Employed" hits, prefer "Is Currently Employed"
+  const empMatch = text.match(/Is Currently Employed\s+(Yes|No)/i);
+  if (empMatch) data.employed = empMatch[1];
+
+  // Income range
+  data.incomeRange = find([
+    /Estimated Income Range\s+([\w\s\dAa]+SM)/i,
+    /BIGDATA_V2\s+([\w\s\d]+SM)/i,
+    /BIGDATA\s+([\w\s\d]+SM)/i,
+  ]);
+
+  // Family income
+  data.familyIncome = find([/Total Family Income\s+([\w\s\d]+SM)/i]);
+
+  // Total assets
+  data.totalAssets = find([
+    /Total Assets\s+([\w\sÀ-ú\d]+?)(?=\s+Estimated|\s+Tax|\s+Is\s+Currently|\s+Last|\n)/i,
+    /Total assets\s+([\w\sÀ-ú\d]+?)(?=\s+Tax|\s+Estimated|\n)/i,
+  ]);
+
+  // PEP
+  const pepMatch = text.match(/Is Currently PEP\s+(Yes|No)/i);
+  data.isPep = pepMatch ? pepMatch[1] : null;
+
+  // Sanctioned
+  const sanctMatch = text.match(/Is Currently Sanctioned\s+(Yes|No)/i);
+  data.currentlySanctioned = sanctMatch ? sanctMatch[1] : 'No';
+
+  // Company owner
+  const ownerMatch = text.match(/Is Currently Company Owner\s+(Yes|No)/i);
+  data.companyOwner = ownerMatch ? ownerMatch[1] : null;
+
+  // Main income source
+  data.mainIncomeSource = find([/Main Income Source\s+([\w\s]+?)(?=\s+Is\s+Likely|\s+Number|\n)/i]);
+
+  // Financial risk
+  const riskLevelMatch = text.match(/Financial Risk Level\s+([A-Z])/i);
+  data.financialRiskLevel = riskLevelMatch ? riskLevelMatch[1] : null;
+  const riskScoreMatch = text.match(/Financial Risk Score\s+(\d+)/i);
+  data.financialRiskScore = riskScoreMatch ? riskScoreMatch[1] : null;
+
+  // Collections
+  const collMatch = text.match(/Collections Occurrences\s+(\d+)/i);
+  data.collections = collMatch ? collMatch[1] : null;
+
+  // Current employer — from Business Relationships or Professions
+  // Look for active employment relationship
+  const employerMatch = text.match(/Relationship Type EMPLOYMENT[\s\S]*?Is Currently Active Yes[\s\S]*?Name\s+([\w\sÀ-ú&]+?)(?=\s+Relationship|\s+Tax Id|\s+Total)/i) ||
+                        text.match(/Status ACTIVE[\s\S]*?Company Name\s+([\w\sÀ-ú&]+?)(?=\s+Area|\s+Level|\s+Status)/i);
+  if (employerMatch) data.currentEmployer = employerMatch[1].trim();
+
+  // Sector of current employment
+  const sectorMatch = text.match(/Status ACTIVE[\s\S]{0,50}?Sector\s+([\w\s\d\-À-ú]+?)(?=\s+Country|\s+Company)/i) ||
+                      text.match(/PRIVATE\s*-\s*\d+\s*-\s*([\w\sÀ-ú,]+?)(?=\s+Country|\s+Company|\s+Area)/i);
+  if (sectorMatch) data.currentSector = sectorMatch[1].trim().substring(0, 60);
+
+  // Sanctions — look for specific source blocks with match rates
+  data.sanctions = {INTERPOL: null, OFAC: null, FBI: null};
+  const interpols = [...text.matchAll(/Source interpol[\s\S]*?Match Rate (\d+)/gi)];
+  interpols.forEach(m => {
+    const r = parseInt(m[1]);
+    if (r >= 50 && (data.sanctions.INTERPOL === null || r > data.sanctions.INTERPOL))
+      data.sanctions.INTERPOL = r;
+  });
+  const ofacs = [...text.matchAll(/Source ofac[\s\S]*?Match Rate (\d+)/gi)];
+  ofacs.forEach(m => {
+    const r = parseInt(m[1]);
+    if (r >= 50 && (data.sanctions.OFAC === null || r > data.sanctions.OFAC))
+      data.sanctions.OFAC = r;
+  });
+  const fbis = [...text.matchAll(/Source fbi[\s\S]*?Match Rate (\d+)/gi)];
+  fbis.forEach(m => {
+    const r = parseInt(m[1]);
+    if (r >= 25 && (data.sanctions.FBI === null || r > data.sanctions.FBI))
+      data.sanctions.FBI = r;
+  });
+
+  return data;
 }
 
 function renderPdfExtract(data) {
