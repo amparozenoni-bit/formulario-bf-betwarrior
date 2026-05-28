@@ -2909,30 +2909,30 @@ function applyBuscaToForm(data) {
     const lines = [];
 
     // Employment
-    if (d.employed === 'Yes' && d.currentEmployer) {
-      lines.push(`Vínculo empregatício: ativo em ${d.currentEmployer}${d.currentSector ? ' — ' + d.currentSector : ''}.`);
-    } else if (d.employed === 'No') {
+    if (data.employed === 'Yes' && data.currentEmployer) {
+      lines.push(`Vínculo empregatício: ativo em ${data.currentEmployer}${data.currentSector ? ' — ' + data.currentSector : ''}.`);
+    } else if (data.employed === 'No') {
       lines.push('Vínculo empregatício: sem vínculo ativo (fonte: BigData Corp / RAIS).');
     }
 
     // Income
-    if (d.incomeRange) lines.push(`Renda individual estimada: ${d.incomeRange}.`);
-    if (d.familyIncome) lines.push(`Renda familiar total: ${d.familyIncome}.`);
-    if (d.totalAssets) lines.push(`Patrimônio total estimado: ${d.totalAssets}.`);
-    if (d.mainIncomeSource) lines.push(`Fonte principal de renda: ${d.mainIncomeSource}.`);
+    if (data.incomeRange) lines.push(`Renda individual estimada: ${data.incomeRange}.`);
+    if (data.familyIncome) lines.push(`Renda familiar total: ${data.familyIncome}.`);
+    if (data.totalAssets) lines.push(`Patrimônio total estimado: ${data.totalAssets}.`);
+    if (data.mainIncomeSource) lines.push(`Fonte principal de renda: ${data.mainIncomeSource}.`);
 
     // Risk score
-    if (d.financialRiskLevel) {
-      lines.push(`Score de risco financeiro: nível ${d.financialRiskLevel}${d.financialRiskScore ? ' (' + d.financialRiskScore + ' pontos)' : ''}.`);
+    if (data.financialRiskLevel) {
+      lines.push(`Score de risco financeiro: nível ${data.financialRiskLevel}${data.financialRiskScore ? ' (' + data.financialRiskScore + ' pontos)' : ''}.`);
     }
 
     // Collections
-    if (d.collections && d.collections !== '0') {
-      lines.push(`Ocorrências em cobranças: ${d.collections}.`);
+    if (data.collections && data.collections !== '0') {
+      lines.push(`Ocorrências em cobranças: ${data.collections}.`);
     }
 
     // Sanctions
-    const sanctions = d.sanctions || {};
+    const sanctions = data.sanctions || {};
     const sanctEntries = Object.entries(sanctions).filter(([,v]) => v !== null);
     if (sanctEntries.length > 0) {
       const s = sanctEntries.map(([src,r]) => `${src} (match rate ${r}%)`).join('; ');
@@ -2942,8 +2942,8 @@ function applyBuscaToForm(data) {
     }
 
     // PEP
-    if (d.isPep === 'No') lines.push('PEP: negativo.');
-    else if (d.isPep === 'Yes') lines.push('PEP: POSITIVO — cliente identificado como Pessoa Politicamente Exposta.');
+    if (data.isPep === 'No') lines.push('PEP: negativo.');
+    else if (data.isPep === 'Yes') lines.push('PEP: POSITIVO — cliente identificado como Pessoa Politicamente Exposta.');
 
     obsEl.value = lines.join('\n');
   }
